@@ -1,6 +1,7 @@
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
 const fs = require('fs');
+const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody } = require('./parsers');
 
 function getOctokit(installationId) {
   return new Octokit({
@@ -11,26 +12,6 @@ function getOctokit(installationId) {
       installationId,
     },
   });
-}
-
-// Tolerant bot login matcher: handles "myapp[bot]", "myapp", "myapp-bot" variations
-function botMatchesLogin(userLogin, botLogin) {
-  if (!botLogin) return false;
-  const normalize = s => s.toLowerCase().replace(/[[\]]/g, '').replace(/-bot$/, '');
-  return normalize(userLogin) === normalize(botLogin);
-}
-
-const IGNORED_PATTERNS = [
-  /^diff --git a\/(.*\/)?(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|.*\.lock)/,
-  /^diff --git a\/.*\.(min\.js|min\.css|map)$/,
-];
-
-function filterDiff(rawDiff) {
-  const files = rawDiff.split(/(?=^diff --git )/m);
-  const filtered = files.filter(chunk => !IGNORED_PATTERNS.some(re => re.test(chunk)));
-  const joined = filtered.join('');
-  // Cap at ~80k chars to stay within model context
-  return joined.length > 80000 ? joined.slice(0, 80000) + '\n\n[diff truncated]' : joined;
 }
 
 async function getPRDiff(installationId, owner, repo, pullNumber) {
@@ -117,11 +98,6 @@ async function getLinkedIssue(installationId, owner, repo, prBody) {
   return { number: data.number, title: data.title, body: data.body };
 }
 
-// Retrospective comments (merge summaries) are excluded — they confuse the AI when
-// generating a new retrospective and don't contain reviewable issue data.
-function isRetrospectiveComment(body) {
-  return /^##\s+🏁\s+PR Retrospective/m.test(body) || /^🔀\s+\*\*Merge commit detected/m.test(body) || /^⛔\s+\*\*This PR is NOT ready/m.test(body);
-}
 
 async function getAllBotReviews(installationId, owner, repo, pullNumber, botLogin) {
   const octokit = getOctokit(installationId);
@@ -134,33 +110,10 @@ async function getAllBotReviews(installationId, owner, repo, pullNumber, botLogi
 async function getMergeFollowUpItems(installationId, owner, repo, pullNumber, botLogin) {
   const octokit = getOctokit(installationId);
   const { data } = await octokit.rest.pulls.listReviews({ owner, repo, pull_number: pullNumber });
-
   const botReviews = data
     .filter(r => botMatchesLogin(r.user.login, botLogin) && !isRetrospectiveComment(r.body))
     .map(r => r.body);
-  if (botReviews.length === 0) return { todos: [], mediums: [], blockers: [] };
-  // Use the latest review that actually contains issue items; fall back to the last one.
-  const hasIssues = body => /^[\s>]*\**\d+\.\**\s+\**\[(Critical|High|Medium|Low|TODO before merge)\]/m.test(body);
-  const latestReview = [...botReviews].reverse().find(hasIssues) ?? botReviews[botReviews.length - 1];
-
-  // Match numbered items regardless of bold/italic markdown wrapping around severity tags
-  // Handles: "1. [High]", "1. **[High]**", "1. **[High]", "**1.** [High]"
-  const todoRe = /^[\s>]*\**\d+\.\**\s+\**\[TODO before merge\]\**[^\n]*/gm;
-  const mediumRe = /^[\s>]*\**\d+\.\**\s+\**\[(?:Medium|Low)\]\**[^\n]*/gm;
-  const blockerRe = /^[\s>]*\**\d+\.\**\s+\**\[(?:Critical|High)\]\**[^\n]*/gm;
-  const todos = [];
-  const mediums = [];
-  const blockers = [];
-
-  let match;
-  todoRe.lastIndex = 0;
-  while ((match = todoRe.exec(latestReview)) !== null) todos.push(match[0].trim().slice(0, 150));
-  mediumRe.lastIndex = 0;
-  while ((match = mediumRe.exec(latestReview)) !== null) mediums.push(match[0].trim().slice(0, 150));
-  blockerRe.lastIndex = 0;
-  while ((match = blockerRe.exec(latestReview)) !== null) blockers.push(match[0].trim().slice(0, 150));
-
-  return { todos: [...new Set(todos)], mediums: [...new Set(mediums)], blockers: [...new Set(blockers)] };
+  return extractFollowUpItems(botReviews);
 }
 
 async function ensureLabel(octokit, owner, repo, name, color, description) {
@@ -175,32 +128,30 @@ async function ensureLabel(octokit, owner, repo, name, color, description) {
   }
 }
 
-async function createFollowUpIssue(installationId, owner, repo, pullNumber, { todos, mediums }, prAuthor) {
+async function createFollowUpIssue(installationId, owner, repo, pullNumber, { todos, mediums, blockers = [] }, prAuthor) {
   const octokit = getOctokit(installationId);
   await ensureLabel(octokit, owner, repo, 'technical-debt', 'e4e669', 'Unresolved TODOs that need follow-up');
-
-  const sections = [
-    `These items were left unresolved when PR #${pullNumber} was merged. They should be addressed in a follow-up PR.`,
-    '',
-  ];
-
-  if (todos.length > 0) {
-    sections.push('## TODOs Before Merge', ...todos.map(t => `- ${t}`), '');
-  }
-  if (mediums.length > 0) {
-    sections.push('## Medium / Low Issues', ...mediums.map(m => `- ${m}`), '');
+  if (blockers.length > 0) {
+    await ensureLabel(octokit, owner, repo, 'severity:high', 'b60205', 'Contains critical or high-severity blockers');
   }
 
-  sections.push(`_Automatically opened by the PR review bot when #${pullNumber} was merged._`);
+  const body = buildFollowUpBody({ todos, mediums, blockers, pullNumber });
+  const labels = ['technical-debt', ...(blockers.length > 0 ? ['severity:high'] : [])];
 
-  await octokit.rest.issues.create({
-    owner,
-    repo,
-    title: `Follow-up: unresolved items from PR #${pullNumber}`,
-    body: sections.join('\n'),
-    labels: ['technical-debt'],
-    assignees: prAuthor ? [prAuthor] : [],
-  });
+  try {
+    await octokit.rest.issues.create({
+      owner, repo,
+      title: `Follow-up: unresolved items from PR #${pullNumber}`,
+      body,
+      labels,
+      assignees: prAuthor ? [prAuthor] : [],
+    });
+  } catch (err) {
+    if (err.status === 403) {
+      console.error(`createFollowUpIssue 403: re-authorize the GitHub App's Issues permission for ${owner}/${repo}`);
+    }
+    throw err;
+  }
 }
 
 async function postReviewComment(installationId, owner, repo, pullNumber, body) {
