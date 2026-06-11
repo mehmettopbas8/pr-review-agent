@@ -3,12 +3,15 @@ const { createAppAuth } = require('@octokit/auth-app');
 const fs = require('fs');
 const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody } = require('./parsers');
 
+// Read once at module load — avoid a sync disk read on every webhook.
+const PRIVATE_KEY = fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+
 function getOctokit(installationId) {
   return new Octokit({
     authStrategy: createAppAuth,
     auth: {
       appId: process.env.GITHUB_APP_ID,
-      privateKey: fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8'),
+      privateKey: PRIVATE_KEY,
       installationId,
     },
   });
