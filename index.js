@@ -1,4 +1,12 @@
 require('dotenv').config();
+
+const REQUIRED_VARS = ['GITHUB_WEBHOOK_SECRET', 'GITHUB_APP_ID', 'PRIVATE_KEY_PATH'];
+const missing = REQUIRED_VARS.filter(v => !process.env[v]);
+if (missing.length > 0) {
+  console.error(`Missing required environment variables: ${missing.join(', ')}`);
+  process.exit(1);
+}
+
 const express = require('express');
 const { Webhooks } = require('@octokit/webhooks');
 const { getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment, getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems, createFollowUpIssue } = require('./githubService');
@@ -6,6 +14,8 @@ const { reviewDiff, summarizePR } = require('./aiService');
 
 const app = express();
 const webhooks = new Webhooks({ secret: process.env.GITHUB_WEBHOOK_SECRET });
+
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
 app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['x-hub-signature-256'];

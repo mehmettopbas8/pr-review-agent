@@ -1,4 +1,5 @@
 const { getProvider } = require('./providers');
+const { buildPRStats, parseSpecResponse } = require('./parsers');
 
 const REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pull request code review.
 
@@ -44,32 +45,6 @@ async function reviewDiff(diff, issue = null, openIssueSummary = '') {
   return provider.complete(REVIEW_SYSTEM_PROMPT, userPrompt, 4096);
 }
 
-function buildPRStats(reviews) {
-  const severityRe = /^[\s>]*\**\d+\.\**\s+\**\[(Critical|High|Medium|Low|TODO before merge)\]\**\s*([^\n]*)/gm;
-  const verdictRe = /\*\*Verdict:\s*([^*]+)\*\*/;
-
-  const rounds = reviews.map((body, i) => {
-    const issues = [];
-    let match;
-    severityRe.lastIndex = 0;
-    while ((match = severityRe.exec(body)) !== null) {
-      issues.push({ severity: match[1], summary: match[2].slice(0, 80) });
-    }
-    const verdictMatch = body.match(verdictRe);
-    return { round: i + 1, issues, verdict: verdictMatch ? verdictMatch[1].trim() : 'Unknown' };
-  });
-
-  const resolved = [];
-  const persistent = [];
-  if (rounds.length > 1) {
-    const lastKeys = new Set(rounds[rounds.length - 1].issues.map(i => i.summary));
-    for (const issue of rounds[0].issues) {
-      (lastKeys.has(issue.summary) ? persistent : resolved).push(issue);
-    }
-  }
-
-  return { rounds, resolved, persistent };
-}
 
 async function summarizePR(reviews) {
   const stats = buildPRStats(reviews);
@@ -93,4 +68,4 @@ async function summarizePR(reviews) {
   return provider.complete(RETROSPECTIVE_SYSTEM_PROMPT, lines.join('\n'), 512);
 }
 
-module.exports = { reviewDiff, summarizePR };
+module.exports = { reviewDiff, summarizePR, parseSpecResponse };
