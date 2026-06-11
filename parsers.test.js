@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems, parseSpecResponse, buildPRStats } from './parsers.js';
+import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems, parseSpecResponse, buildPRStats, buildOpenIssueSummary } from './parsers.js';
 
 describe('botMatchesLogin', () => {
   it('matches exact [bot] suffix', () => {
@@ -190,5 +190,32 @@ describe('buildPRStats', () => {
     const { resolved, persistent } = buildPRStats([round1]);
     expect(resolved).toHaveLength(0);
     expect(persistent).toHaveLength(0);
+  });
+});
+
+describe('buildOpenIssueSummary', () => {
+  const reviewWithFile = '1. [High] Missing auth check in `src/auth.js` — add validation';
+  const diff = 'diff --git a/src/auth.js b/src/auth.js\n+fixed\n';
+  const diffOther = 'diff --git a/src/other.js b/src/other.js\n+something\n';
+
+  it('returns empty string when no bot reviews', () => {
+    expect(buildOpenIssueSummary([], diff)).toBe('');
+  });
+  it('returns empty string when no issues found in reviews', () => {
+    expect(buildOpenIssueSummary(['Just a paragraph comment.'], diff)).toBe('');
+  });
+  it('places issue in addressed when its file was touched', () => {
+    const result = buildOpenIssueSummary([reviewWithFile], diff);
+    expect(result).toContain('verify the issues below are resolved');
+    expect(result).toContain('[High]');
+  });
+  it('places issue in open when its file was NOT touched', () => {
+    const result = buildOpenIssueSummary([reviewWithFile], diffOther);
+    expect(result).toContain('NOT touched');
+    expect(result).toContain('[High]');
+  });
+  it('includes LGTM suggestion at end', () => {
+    const result = buildOpenIssueSummary([reviewWithFile], diff);
+    expect(result).toContain('LGTM');
   });
 });
