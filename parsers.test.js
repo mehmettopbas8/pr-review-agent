@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { botMatchesLogin, filterDiff, isRetrospectiveComment } from './parsers.js';
+import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems } from './parsers.js';
 
 describe('botMatchesLogin', () => {
   it('matches exact [bot] suffix', () => {
@@ -56,5 +56,56 @@ describe('isRetrospectiveComment', () => {
   });
   it('does not match a normal review', () => {
     expect(isRetrospectiveComment('1. [High] Missing validation in auth.js')).toBe(false);
+  });
+});
+
+describe('buildFollowUpBody', () => {
+  it('includes PR back-link', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: [], blockers: [], pullNumber: 42 });
+    expect(body).toContain('#42');
+  });
+  it('renders checkbox task items', () => {
+    const body = buildFollowUpBody({ todos: ['Fix the thing'], mediums: [], blockers: [], pullNumber: 1 });
+    expect(body).toContain('- [ ] Fix the thing');
+  });
+  it('renders blockers in Critical/High section', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: [], blockers: ['SQL injection in login'], pullNumber: 7 });
+    expect(body).toContain('## Critical / High');
+    expect(body).toContain('- [ ] SQL injection in login');
+  });
+  it('renders medium/low section', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: ['Missing index on users table'], blockers: [], pullNumber: 3 });
+    expect(body).toContain('## Medium / Low');
+  });
+  it('includes auto-generated footer', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: [], blockers: [], pullNumber: 5 });
+    expect(body).toContain('Automatically opened');
+  });
+});
+
+describe('extractFollowUpItems', () => {
+  it('returns empty arrays for no reviews', () => {
+    expect(extractFollowUpItems([])).toEqual({ todos: [], mediums: [], blockers: [] });
+  });
+  it('extracts todos', () => {
+    const review = '1. [TODO before merge] Add tests for the auth module';
+    const { todos } = extractFollowUpItems([review]);
+    expect(todos).toHaveLength(1);
+    expect(todos[0]).toContain('Add tests');
+  });
+  it('extracts blockers from Critical/High tags', () => {
+    const review = '1. [Critical] SQL injection\n2. [High] Missing auth check';
+    const { blockers } = extractFollowUpItems([review]);
+    expect(blockers).toHaveLength(2);
+  });
+  it('extracts mediums from Medium/Low tags', () => {
+    const review = '1. [Medium] Rename variable\n2. [Low] Add comment';
+    const { mediums } = extractFollowUpItems([review]);
+    expect(mediums).toHaveLength(2);
+  });
+  it('deduplicates identical items', () => {
+    const review = '1. [High] Same issue\n1. [High] Same issue';
+    const { blockers } = extractFollowUpItems([review]);
+    expect(blockers).toHaveLength(1);
   });
 });
