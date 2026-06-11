@@ -46,25 +46,21 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         getAllBotReviews(installationId, owner, repo, pullNumber, botLogin),
       ]);
 
-      console.log(`[retro] allReviews count: ${allReviews.length}`);
       const hasUnresolved = todos.length > 0 || mediums.length > 0 || blockers.length > 0;
       const [followUpIssue, retrospective] = await Promise.all([
         hasUnresolved
-          ? createFollowUpIssue(installationId, owner, repo, pullNumber, { todos, mediums }, prAuthor).catch(err => {
+          ? createFollowUpIssue(installationId, owner, repo, pullNumber, { todos, mediums, blockers }, prAuthor).catch(err => {
               console.error('Failed to create follow-up issue:', err.message);
               return null;
             })
           : Promise.resolve(null),
-        allReviews.length > 0 ? summarizePR(allReviews).then(r => {
-          console.log(`[retro] summarizePR result length: ${r ? r.length : 'null'}, preview: ${r ? r.slice(0, 80) : 'null'}`);
-          return r;
-        }).catch(err => {
-          console.error('Failed to generate retrospective:', err.message);
-          return null;
-        }) : Promise.resolve(null),
+        allReviews.length > 0
+          ? summarizePR(allReviews).catch(err => {
+              console.error('Failed to generate retrospective:', err.message);
+              return null;
+            })
+          : Promise.resolve(null),
       ]);
-
-      console.log(`[retro] retrospective truthy: ${!!retrospective}, hasUnresolved: ${hasUnresolved}`);
       // Skip posting if there is nothing to say
       if (!retrospective && !hasUnresolved) return;
 
