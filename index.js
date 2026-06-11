@@ -1,9 +1,13 @@
 require('dotenv').config();
 
-const REQUIRED_VARS = ['GITHUB_WEBHOOK_SECRET', 'GITHUB_APP_ID', 'PRIVATE_KEY_PATH'];
+const REQUIRED_VARS = ['GITHUB_WEBHOOK_SECRET', 'GITHUB_APP_ID'];
 const missing = REQUIRED_VARS.filter(v => !process.env[v]);
 if (missing.length > 0) {
   console.error(`Missing required environment variables: ${missing.join(', ')}`);
+  process.exit(1);
+}
+if (!process.env.PRIVATE_KEY_CONTENTS && !process.env.PRIVATE_KEY_PATH) {
+  console.error('Missing required environment variable: PRIVATE_KEY_CONTENTS or PRIVATE_KEY_PATH');
   process.exit(1);
 }
 
@@ -16,6 +20,8 @@ const {
 } = require('./githubService');
 const { reviewDiff, summarizePR, generateSpecAndIssues } = require('./aiService');
 
+const dashboard = require('./dashboard');
+
 const app = express();
 const webhooks = new Webhooks({ secret: process.env.GITHUB_WEBHOOK_SECRET });
 
@@ -26,6 +32,7 @@ const deliveryIds = new Set();
 const specGeneratedForPR = new Set();
 
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
+app.use('/dashboard', dashboard);
 
 app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['x-hub-signature-256'];

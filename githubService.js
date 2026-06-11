@@ -3,10 +3,14 @@ const { createAppAuth } = require('@octokit/auth-app');
 const fs = require('fs');
 const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody, buildOpenIssueSummary } = require('./parsers');
 
-// Memoize the private key — read from disk only on the first call.
+// Memoize the private key.
+// Prefers PRIVATE_KEY_CONTENTS (Railway/cloud) over PRIVATE_KEY_PATH (local file).
 let _privateKey;
 function getPrivateKey() {
-  if (!_privateKey) _privateKey = fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+  if (!_privateKey) {
+    _privateKey = process.env.PRIVATE_KEY_CONTENTS
+      || fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+  }
   return _privateKey;
 }
 
