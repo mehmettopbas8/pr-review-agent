@@ -1,5 +1,6 @@
 const { getProvider } = require('./providers');
 const { buildPRStats, parseSpecResponse } = require('./parsers');
+const yaml = require('yaml');
 
 const REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pull request code review.
 
@@ -30,6 +31,17 @@ Severity definitions:
 - [TODO before merge]: intentional placeholder/stub that is part of the PR's stated scope but not yet implemented — must be completed or explicitly acknowledged before merge
 
 Format your entire response in Markdown.`;
+
+const GEN_SPEC_SYSTEM_PROMPT = `You are a senior software architect. Given a requirements document, produce two outputs in a single response:
+
+1. A fenced \`\`\`yaml block containing an OpenAPI 3.1 spec that models the API described by the requirements. Be specific — use real path names, request/response schemas, and status codes.
+
+2. A fenced \`\`\`json block containing a JSON array of GitHub issues to implement the requirements. Each issue must be an object with:
+   - "title": string — concise, imperative (e.g. "Add POST /users endpoint")
+   - "body": string — markdown describing the task, acceptance criteria, and any relevant notes
+   - "labels": string[] — e.g. ["enhancement"], ["bug"], ["api"]
+
+Separate the two blocks with a blank line. No other content between them. You may include a brief introductory sentence before the yaml block and a brief sentence between the blocks.`;
 
 const RETROSPECTIVE_SYSTEM_PROMPT = `You are writing a short PR retrospective for the development team based on structured review stats.
 Cover: what went well, what took multiple rounds to fix, any patterns worth noting. Under 200 words, Markdown, constructive tone.`;
@@ -68,4 +80,22 @@ async function summarizePR(reviews) {
   return provider.complete(RETROSPECTIVE_SYSTEM_PROMPT, lines.join('\n'), 512);
 }
 
-module.exports = { reviewDiff, summarizePR, parseSpecResponse };
+async function generateSpecAndIssues(requirementsText) {
+  const provider = getProvider();
+  const text = await provider.complete(GEN_SPEC_SYSTEM_PROMPT, requirementsText, 4096);
+  const { openApiYaml, issues } = parseSpecResponse(text);
+
+  // Validate YAML parses without error
+  yaml.parse(openApiYaml);
+
+  // Validate issues shape
+  for (const issue of issues) {
+    if (typeof issue.title !== 'string' || !issue.title.trim()) {
+      throw new Error('generateSpecAndIssues: each issue must have a non-empty title string');
+    }
+  }
+
+  return { openApiYaml, issues };
+}
+
+module.exports = { reviewDiff, summarizePR, generateSpecAndIssues, parseSpecResponse };

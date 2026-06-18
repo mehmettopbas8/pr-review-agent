@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems } from './parsers.js';
+import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems, parseSpecResponse, buildPRStats } from './parsers.js';
 
 describe('botMatchesLogin', () => {
   it('matches exact [bot] suffix', () => {
@@ -107,5 +107,88 @@ describe('extractFollowUpItems', () => {
     const review = '1. [High] Same issue\n1. [High] Same issue';
     const { blockers } = extractFollowUpItems([review]);
     expect(blockers).toHaveLength(1);
+  });
+});
+
+describe('parseSpecResponse', () => {
+  const SAMPLE = `Here is the spec:
+
+\`\`\`yaml
+openapi: 3.1.0
+info:
+  title: Test API
+  version: 1.0.0
+paths: {}
+\`\`\`
+
+And the issues:
+
+\`\`\`json
+[{"title": "Add GET /users", "body": "Implement the users list endpoint", "labels": ["enhancement"]}]
+\`\`\`
+`;
+
+  it('extracts YAML block', () => {
+    const { openApiYaml } = parseSpecResponse(SAMPLE);
+    expect(openApiYaml).toContain('openapi: 3.1.0');
+  });
+  it('extracts issues array', () => {
+    const { issues } = parseSpecResponse(SAMPLE);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].title).toBe('Add GET /users');
+  });
+  it('throws on missing yaml block', () => {
+    const bad = '```json\n[]\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('missing ```yaml block');
+  });
+  it('throws on missing json block', () => {
+    const bad = '```yaml\nopenapi: 3.1.0\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('missing ```json block');
+  });
+  it('throws on invalid JSON', () => {
+    const bad = '```yaml\nopenapi: 3.1.0\n```\n```json\nnot-json\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('invalid JSON');
+  });
+  it('throws when issues is not an array', () => {
+    const bad = '```yaml\nopenapi: 3.1.0\n```\n```json\n{"key": "val"}\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('must be a JSON array');
+  });
+  it('tolerates extra prose around the blocks', () => {
+    const withProse = `Some intro text.\n${SAMPLE}\nSome outro text.`;
+    const { issues } = parseSpecResponse(withProse);
+    expect(issues).toHaveLength(1);
+  });
+});
+
+describe('buildPRStats', () => {
+  const round1 = '1. [High] Missing auth check in login.js\n**Verdict: Changes Requested**';
+  const round2 = '1. [Low] Rename variable\n**Verdict: Approve with Suggestions**';
+
+  it('counts rounds correctly', () => {
+    const { rounds } = buildPRStats([round1, round2]);
+    expect(rounds).toHaveLength(2);
+  });
+  it('extracts severity from each round', () => {
+    const { rounds } = buildPRStats([round1]);
+    expect(rounds[0].issues[0].severity).toBe('High');
+  });
+  it('extracts verdict', () => {
+    const { rounds } = buildPRStats([round1]);
+    expect(rounds[0].verdict).toBe('Changes Requested');
+  });
+  it('marks resolved issues between rounds', () => {
+    const { resolved } = buildPRStats([round1, round2]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].severity).toBe('High');
+  });
+  it('marks persistent issues', () => {
+    const same = '1. [Low] Rename variable\n**Verdict: Approve with Suggestions**';
+    const { persistent } = buildPRStats([round2, same]);
+    expect(persistent).toHaveLength(1);
+  });
+  it('returns empty resolved/persistent for single round', () => {
+    const { resolved, persistent } = buildPRStats([round1]);
+    expect(resolved).toHaveLength(0);
+    expect(persistent).toHaveLength(0);
   });
 });
