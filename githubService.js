@@ -1,21 +1,31 @@
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
 const fs = require('fs');
-const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody } = require('./parsers');
+const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody, buildOpenIssueSummary } = require('./parsers');
 
-// Read once at module load — avoid a sync disk read on every webhook.
-const PRIVATE_KEY = fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+// Memoize the private key — read from disk only on the first call.
+let _privateKey;
+function getPrivateKey() {
+  if (!_privateKey) _privateKey = fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+  return _privateKey;
+}
+
+let _octokitFactory = null;
 
 function getOctokit(installationId) {
+  if (_octokitFactory) return _octokitFactory(installationId);
   return new Octokit({
     authStrategy: createAppAuth,
     auth: {
       appId: process.env.GITHUB_APP_ID,
-      privateKey: PRIVATE_KEY,
+      privateKey: getPrivateKey(),
       installationId,
     },
   });
 }
+
+// Test seam — call this in tests to inject a mock Octokit factory.
+function _setOctokitFactory(fn) { _octokitFactory = fn; }
 
 async function getPRDiff(installationId, owner, repo, pullNumber) {
   const octokit = getOctokit(installationId);
@@ -43,54 +53,7 @@ async function getOpenIssueSummary(installationId, owner, repo, pullNumber, botL
     .filter(r => botMatchesLogin(r.user.login, botLogin) && !isRetrospectiveComment(r.body))
     .map(r => r.body);
   if (botReviews.length === 0) return '';
-
-  // Match numbered items regardless of bold/italic markdown wrapping around severity tags
-  const issueLineRe = /^[\s>]*\**\d+\.\**\s+\**\[(Critical|High|Medium|Low|TODO before merge)\]\**[^\n]*/gm;
-  // Extract file paths mentioned right after the issue line (backtick path or plain path pattern)
-  const filePathRe = /`([^`]+\.[a-z]+)`|(\b[\w./-]+\.[a-z]{2,4}\b)/;
-
-  const allIssues = [];
-  for (const body of botReviews) {
-    let match;
-    issueLineRe.lastIndex = 0;
-    while ((match = issueLineRe.exec(body)) !== null) {
-      const severity = match[1];
-      const line = match[0].trim();
-      const pathMatch = line.match(filePathRe);
-      const filePath = pathMatch ? (pathMatch[1] || pathMatch[2]) : null;
-      allIssues.push({ severity, line: line.slice(0, 120), filePath });
-    }
-  }
-
-  if (allIssues.length === 0) return '';
-
-  // Determine which flagged files were touched in the new diff
-  const touchedFiles = new Set(
-    [...filteredDiff.matchAll(/^diff --git a\/.+ b\/(.+)$/gm)].map(m => m[1])
-  );
-
-  const open = [];
-  const addressed = [];
-  for (const issue of allIssues) {
-    if (issue.filePath && touchedFiles.has(issue.filePath)) {
-      addressed.push(issue);
-    } else {
-      open.push(issue);
-    }
-  }
-
-  const lines = ['## Open Issues From Previous Review(s)'];
-  if (open.length > 0) {
-    lines.push('These issues were NOT touched in this push — check if they are still present:');
-    open.forEach(i => lines.push(`- [${i.severity}] ${i.line}`));
-  }
-  if (addressed.length > 0) {
-    lines.push('\nThese files were modified — verify the issues below are resolved:');
-    addressed.forEach(i => lines.push(`- [${i.severity}] ${i.line}`));
-  }
-  lines.push('\nIf all issues above are resolved and no new ones exist, give LGTM.');
-
-  return lines.join('\n');
+  return buildOpenIssueSummary(botReviews, filteredDiff);
 }
 
 async function getLinkedIssue(installationId, owner, repo, prBody) {
@@ -210,4 +173,5 @@ module.exports = {
   getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment,
   getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems,
   createFollowUpIssue, getFileFromPR, createIssuesFromSpec,
+  _setOctokitFactory,
 };
