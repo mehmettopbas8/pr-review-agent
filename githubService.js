@@ -162,4 +162,49 @@ async function postReviewComment(installationId, owner, repo, pullNumber, body) 
   });
 }
 
-module.exports = { getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment, getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems, createFollowUpIssue };
+async function getFileFromPR(installationId, owner, repo, pullNumber, filename) {
+  const octokit = getOctokit(installationId);
+  // Get PR head SHA
+  const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  const ref = pr.head.sha;
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path: filename, ref });
+    if (data.type !== 'file') return null;
+    return Buffer.from(data.content, 'base64').toString('utf8');
+  } catch (err) {
+    if (err.status === 404) return null;
+    throw err;
+  }
+}
+
+async function createIssuesFromSpec(installationId, owner, repo, issues) {
+  const octokit = getOctokit(installationId);
+  const created = [];
+  for (const issue of issues) {
+    const labels = Array.isArray(issue.labels) ? issue.labels : [];
+    for (const label of labels) {
+      await ensureLabel(octokit, owner, repo, label, '0075ca', '').catch(() => {});
+    }
+    try {
+      const { data } = await octokit.rest.issues.create({
+        owner, repo,
+        title: issue.title,
+        body: issue.body || '',
+        labels,
+      });
+      created.push({ number: data.number, url: data.html_url, title: data.title });
+    } catch (err) {
+      if (err.status === 403) {
+        console.error(`createIssuesFromSpec 403: re-authorize the GitHub App's Issues permission for ${owner}/${repo}`);
+      }
+      throw err;
+    }
+  }
+  return created;
+}
+
+module.exports = {
+  getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment,
+  getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems,
+  createFollowUpIssue, getFileFromPR, createIssuesFromSpec,
+};
