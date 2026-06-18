@@ -177,6 +177,21 @@ function buildOpenIssueSummary(botReviewBodies, filteredDiff) {
   return lines.join('\n');
 }
 
+// Parses AI response containing two fenced ```xml blocks (LEVEL0 and LEVEL1 DFDs).
+function parseDiagramResponse(text) {
+  const blocks = [];
+  const re = /```xml\s*([\s\S]*?)```/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) blocks.push(m[1].trim());
+  if (blocks.length < 2) {
+    throw new Error(`parseDiagramResponse: expected 2 xml blocks, got ${blocks.length}`);
+  }
+  const [level0Xml, level1Xml] = blocks;
+  if (!level0Xml.includes('<mxfile')) throw new Error('parseDiagramResponse: level0 block is not valid mxfile XML');
+  if (!level1Xml.includes('<mxfile')) throw new Error('parseDiagramResponse: level1 block is not valid mxfile XML');
+  return { level0Xml, level1Xml };
+}
+
 module.exports = {
   botMatchesLogin,
   filterDiff,
@@ -184,6 +199,7 @@ module.exports = {
   extractFollowUpItems,
   buildFollowUpBody,
   parseSpecResponse,
+  parseDiagramResponse,
   buildPRStats,
   buildOpenIssueSummary,
 };

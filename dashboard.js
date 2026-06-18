@@ -1,5 +1,5 @@
 const express = require('express');
-const { generateSpecAndIssues } = require('./aiService');
+const { generateSpecAndIssues, generateDiagrams } = require('./aiService');
 
 const router = express.Router();
 
@@ -21,15 +21,26 @@ router.get('/', (_req, res) => {
   res.send(HTML);
 });
 
-// POST /dashboard/generate — run spec generation from pasted requirements
+// POST /dashboard/generate — run full pipeline: diagrams + spec + issues
 router.post('/generate', express.json(), async (req, res) => {
   const { requirements } = req.body;
   if (!requirements || !requirements.trim()) {
     return res.status(400).json({ error: 'requirements text is required' });
   }
   try {
-    const result = await generateSpecAndIssues(requirements);
-    res.json({ ok: true, ...result });
+    const [diagrams, specResult] = await Promise.allSettled([
+      generateDiagrams(requirements),
+      generateSpecAndIssues(requirements),
+    ]);
+    res.json({
+      ok: true,
+      level0Xml: diagrams.status === 'fulfilled' ? diagrams.value.level0Xml : null,
+      level1Xml: diagrams.status === 'fulfilled' ? diagrams.value.level1Xml : null,
+      diagramError: diagrams.status === 'rejected' ? diagrams.reason.message : null,
+      openApiYaml: specResult.status === 'fulfilled' ? specResult.value.openApiYaml : null,
+      issues: specResult.status === 'fulfilled' ? specResult.value.issues : [],
+      specError: specResult.status === 'rejected' ? specResult.reason.message : null,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -122,13 +133,25 @@ const HTML = `<!DOCTYPE html>
       <div class="tabs">
         <div class="tab active" onclick="switchTab('issues')">Issues (<span id="issue-count">0</span>)</div>
         <div class="tab" onclick="switchTab('spec')">OpenAPI YAML</div>
+        <div class="tab" onclick="switchTab('level0')">Level 0 DFD</div>
+        <div class="tab" onclick="switchTab('level1')">Level 1 DFD</div>
       </div>
       <div class="tab-content active" id="tab-issues">
         <ul class="issue-list" id="issue-list"></ul>
       </div>
       <div class="tab-content" id="tab-spec">
-        <button class="copy-btn" onclick="copySpec()">Copy</button>
+        <button class="copy-btn" onclick="copyText('spec-output')">Copy</button>
         <pre id="spec-output"></pre>
+      </div>
+      <div class="tab-content" id="tab-level0">
+        <button class="copy-btn" onclick="copyText('level0-output')">Copy XML</button>
+        <button class="copy-btn" style="margin-right:6px" onclick="downloadXml('level0-output','level0.drawio')">Download</button>
+        <pre id="level0-output"></pre>
+      </div>
+      <div class="tab-content" id="tab-level1">
+        <button class="copy-btn" onclick="copyText('level1-output')">Copy XML</button>
+        <button class="copy-btn" style="margin-right:6px" onclick="downloadXml('level1-output','level1.drawio')">Download</button>
+        <pre id="level1-output"></pre>
       </div>
     </div>
   </div>
@@ -189,7 +212,9 @@ function renderOutput(d) {
     (iss.body ? '<div class="body-preview">' + escHtml(iss.body.slice(0, 200)) + (iss.body.length > 200 ? '…' : '') + '</div>' : '') +
     '</li>'
   ).join('');
-  document.getElementById('spec-output').textContent = d.openApiYaml || '';
+  document.getElementById('spec-output').textContent = d.openApiYaml || (d.specError ? 'Error: ' + d.specError : '');
+  document.getElementById('level0-output').textContent = d.level0Xml || (d.diagramError ? 'Error: ' + d.diagramError : '');
+  document.getElementById('level1-output').textContent = d.level1Xml || (d.diagramError ? 'Error: ' + d.diagramError : '');
   document.getElementById('output-section').classList.add('visible');
   switchTab('issues');
 }
@@ -198,13 +223,22 @@ function hideOutput() {
   document.getElementById('output-section').classList.remove('visible');
 }
 
+const TABS = ['issues','spec','level0','level1'];
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ['issues','spec'][i] === name));
-  document.querySelectorAll('.tab-content').forEach((t, i) => t.classList.toggle('active', ['tab-issues','tab-spec'][i] === 'tab-' + name));
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', TABS[i] === name));
+  document.querySelectorAll('.tab-content').forEach((t, i) => t.classList.toggle('active', TABS[i] === name));
 }
 
-function copySpec() {
-  navigator.clipboard.writeText(document.getElementById('spec-output').textContent);
+function copyText(id) {
+  navigator.clipboard.writeText(document.getElementById(id).textContent);
+}
+
+function downloadXml(id, filename) {
+  const xml = document.getElementById(id).textContent;
+  const a = document.createElement('a');
+  a.href = 'data:application/xml;charset=utf-8,' + encodeURIComponent(xml);
+  a.download = filename;
+  a.click();
 }
 
 function escHtml(s) {

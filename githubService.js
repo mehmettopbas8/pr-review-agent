@@ -132,6 +132,12 @@ async function postReviewComment(installationId, owner, repo, pullNumber, body) 
   });
 }
 
+async function getPRHeadBranch(installationId, owner, repo, pullNumber) {
+  const octokit = getOctokit(installationId);
+  const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  return data.head.ref;
+}
+
 async function getFileFromPR(installationId, owner, repo, pullNumber, filename) {
   const octokit = getOctokit(installationId);
   // Get PR head SHA
@@ -144,6 +150,29 @@ async function getFileFromPR(installationId, owner, repo, pullNumber, filename) 
   } catch (err) {
     if (err.status === 404) return null;
     throw err;
+  }
+}
+
+// Commits one or more files to a branch using the GitHub contents API.
+// files: [{ path: 'docs/level0.drawio', content: '<xml>...' }, ...]
+async function commitFilesToBranch(installationId, owner, repo, branch, files, message) {
+  const octokit = getOctokit(installationId);
+  for (const file of files) {
+    let sha;
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path: file.path, ref: branch });
+      sha = data.sha;
+    } catch (err) {
+      if (err.status !== 404) throw err;
+    }
+    await octokit.rest.repos.createOrUpdateFileContents({
+      owner, repo,
+      path: file.path,
+      message,
+      content: Buffer.from(file.content, 'utf8').toString('base64'),
+      branch,
+      ...(sha ? { sha } : {}),
+    });
   }
 }
 
@@ -176,6 +205,6 @@ async function createIssuesFromSpec(installationId, owner, repo, issues) {
 module.exports = {
   getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment,
   getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems,
-  createFollowUpIssue, getFileFromPR, createIssuesFromSpec,
-  _setOctokitFactory,
+  createFollowUpIssue, getFileFromPR, getPRHeadBranch, createIssuesFromSpec,
+  commitFilesToBranch, _setOctokitFactory,
 };

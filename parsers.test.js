@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems, parseSpecResponse, buildPRStats, buildOpenIssueSummary } from './parsers.js';
+import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems, parseSpecResponse, parseDiagramResponse, buildPRStats, buildOpenIssueSummary } from './parsers.js';
 
 describe('botMatchesLogin', () => {
   it('matches exact [bot] suffix', () => {
@@ -157,6 +157,34 @@ And the issues:
     const withProse = `Some intro text.\n${SAMPLE}\nSome outro text.`;
     const { issues } = parseSpecResponse(withProse);
     expect(issues).toHaveLength(1);
+  });
+});
+
+describe('parseDiagramResponse', () => {
+  const validXml = (id) => `<mxfile host="app.diagrams.net"><diagram id="${id}" name="Test"><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>`;
+  const twoBlocks = `Here are the diagrams:\n\`\`\`xml\n${validXml('l0')}\n\`\`\`\n\n\`\`\`xml\n${validXml('l1')}\n\`\`\``;
+
+  it('extracts level0Xml and level1Xml from two xml blocks', () => {
+    const { level0Xml, level1Xml } = parseDiagramResponse(twoBlocks);
+    expect(level0Xml).toContain('mxfile');
+    expect(level1Xml).toContain('mxfile');
+  });
+  it('level0 and level1 are different blocks', () => {
+    const { level0Xml, level1Xml } = parseDiagramResponse(twoBlocks);
+    expect(level0Xml).toContain('"l0"');
+    expect(level1Xml).toContain('"l1"');
+  });
+  it('throws when fewer than 2 xml blocks', () => {
+    expect(() => parseDiagramResponse('```xml\n' + validXml('l0') + '\n```')).toThrow('expected 2 xml blocks');
+  });
+  it('throws when block is missing mxfile tag', () => {
+    const bad = '```xml\n<notmxfile/>\n```\n\n```xml\n<notmxfile/>\n```';
+    expect(() => parseDiagramResponse(bad)).toThrow('not valid mxfile XML');
+  });
+  it('handles extra text between blocks without error', () => {
+    const withExtra = `Intro text.\n\`\`\`xml\n${validXml('l0')}\n\`\`\`\n\nSome notes here.\n\`\`\`xml\n${validXml('l1')}\n\`\`\`\nTrailing text.`;
+    const { level0Xml } = parseDiagramResponse(withExtra);
+    expect(level0Xml).toContain('mxfile');
   });
 });
 

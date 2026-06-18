@@ -1,5 +1,5 @@
 const { getProvider } = require('./providers');
-const { buildPRStats, parseSpecResponse } = require('./parsers');
+const { buildPRStats, parseSpecResponse, parseDiagramResponse } = require('./parsers');
 const yaml = require('yaml');
 
 const REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pull request code review.
@@ -31,6 +31,48 @@ Severity definitions:
 - [TODO before merge]: intentional placeholder/stub that is part of the PR's stated scope but not yet implemented — must be completed or explicitly acknowledged before merge
 
 Format your entire response in Markdown.`;
+
+const GEN_DIAGRAMS_SYSTEM_PROMPT = `You are a senior software architect. Given a requirements document, produce two draw.io DFD diagrams as XML.
+
+Output exactly two fenced code blocks in this order:
+
+1. A fenced \`\`\`xml block labelled LEVEL0 — a Context-Level DFD (Level 0) in draw.io mxGraph XML format.
+   - One rounded rectangle in the center representing the entire system (yellow fill #FFF2CC, stroke #D6B656)
+   - External entities as rectangles around it (customers, staff, admins, external services) with distinct fill colors
+   - Labeled directed edges showing the main data flows between external entities and the system
+   - Title text cell at the top
+
+2. A fenced \`\`\`xml block labelled LEVEL1 — a Level 1 DFD in draw.io mxGraph XML format.
+   - Each major process as an ellipse (green fill #d5e8d4, stroke #82b366), numbered (0.0, 1.0, 2.0 …)
+   - External entities as rectangles (same colors as Level 0)
+   - Data stores as open-ended rectangles (shape=partialRectangle, yellow fill #fff2cc, stroke #d6b656), labelled D1, D2 …
+   - Labeled directed edges between processes, entities, and data stores
+
+Use this exact XML structure for both diagrams:
+<mxfile host="app.diagrams.net">
+  <diagram id="unique-id" name="Diagram Name">
+    <mxGraphModel dx="1422" dy="798" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <!-- cells here, all with parent="1" -->
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
+
+Cell rules:
+- Every vertex cell: vertex="1" parent="1"
+- Every edge cell: edge="1" parent="1" source="<id>" target="<id>"
+- Text labels cell: style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontStyle=1;fontSize=18;"
+- External entity rectangle: style="rounded=0;whiteSpace=wrap;html=1;fillColor=<color>;strokeColor=<stroke>;fontSize=13;fontStyle=1;"
+- System/process ellipse: style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1;"
+- Data store: style="shape=partialRectangle;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;top=0;left=0;right=0;bottom=0;"
+- Edge: style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;fontSize=11;"
+
+Use &amp; for & in XML values. Use &#xa; for newlines inside value attributes.
+
+No other content between the two blocks except a blank line. The XML must be valid and well-formed.`;
 
 const GEN_SPEC_SYSTEM_PROMPT = `You are a senior software architect. Given a requirements document, produce two outputs in a single response:
 
@@ -80,6 +122,12 @@ async function summarizePR(reviews) {
   return provider.complete(RETROSPECTIVE_SYSTEM_PROMPT, lines.join('\n'), 512);
 }
 
+async function generateDiagrams(requirementsText) {
+  const provider = getProvider();
+  const text = await provider.complete(GEN_DIAGRAMS_SYSTEM_PROMPT, requirementsText, 6000);
+  return parseDiagramResponse(text);
+}
+
 async function generateSpecAndIssues(requirementsText) {
   const provider = getProvider();
   const text = await provider.complete(GEN_SPEC_SYSTEM_PROMPT, requirementsText, 4096);
@@ -98,4 +146,4 @@ async function generateSpecAndIssues(requirementsText) {
   return { openApiYaml, issues };
 }
 
-module.exports = { reviewDiff, summarizePR, generateSpecAndIssues, parseSpecResponse };
+module.exports = { reviewDiff, summarizePR, generateSpecAndIssues, generateDiagrams, parseSpecResponse };
