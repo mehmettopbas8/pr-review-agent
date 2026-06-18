@@ -19,8 +19,10 @@ const { reviewDiff, summarizePR, generateSpecAndIssues } = require('./aiService'
 const app = express();
 const webhooks = new Webhooks({ secret: process.env.GITHUB_WEBHOOK_SECRET });
 
-// In-memory de-dupe: track which PRs have had spec generation run so
-// synchronize events don't re-trigger it after the initial opened event.
+// In-memory de-dupe sets.
+// deliveryIds: prevents double-processing GitHub retried deliveries.
+// specGeneratedForPR: prevents re-running spec generation on synchronize after opened.
+const deliveryIds = new Set();
 const specGeneratedForPR = new Set();
 
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
@@ -30,6 +32,12 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   if (!signature || !(await webhooks.verify(req.body.toString(), signature))) {
     return res.status(401).send('Unauthorized');
   }
+
+  const deliveryId = req.headers['x-github-delivery'];
+  if (deliveryId && deliveryIds.has(deliveryId)) {
+    return res.status(200).send('Duplicate delivery — ignored');
+  }
+  if (deliveryId) deliveryIds.add(deliveryId);
 
   const payload = JSON.parse(req.body);
   const action = payload.action;
