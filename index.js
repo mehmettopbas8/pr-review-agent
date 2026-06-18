@@ -16,9 +16,10 @@ const { Webhooks } = require('@octokit/webhooks');
 const {
   getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment,
   getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems,
-  createFollowUpIssue, getFileFromPR, createIssuesFromSpec,
+  createFollowUpIssue, getFileFromPR, getPRHeadBranch, createIssuesFromSpec,
+  commitFilesToBranch,
 } = require('./githubService');
-const { reviewDiff, summarizePR, generateSpecAndIssues } = require('./aiService');
+const { reviewDiff, summarizePR, generateSpecAndIssues, generateDiagrams } = require('./aiService');
 
 const dashboard = require('./dashboard');
 
@@ -180,6 +181,31 @@ async function handleSpecGeneration(installationId, owner, repo, pullNumber) {
     return;
   }
 
+  // Step 1: generate DFD diagrams and commit them to the PR branch
+  let diagramSection = '';
+  try {
+    const branch = await getPRHeadBranch(installationId, owner, repo, pullNumber);
+
+    const { level0Xml, level1Xml } = await generateDiagrams(requirementsText);
+    await commitFilesToBranch(installationId, owner, repo, branch, [
+      { path: 'docs/level0.drawio', content: level0Xml },
+      { path: 'docs/level1.drawio', content: level1Xml },
+    ], 'docs: add LeadBot-generated DFD diagrams (level0 + level1)');
+
+    diagramSection = [
+      '### DFD Diagrams',
+      '',
+      'Committed to this branch:',
+      `- [\`docs/level0.drawio\`](../../blob/${branch}/docs/level0.drawio) — Context-Level DFD`,
+      `- [\`docs/level1.drawio\`](../../blob/${branch}/docs/level1.drawio) — Level 1 DFD`,
+      '',
+    ].join('\n');
+  } catch (err) {
+    console.error('Diagram generation failed:', err.message);
+    diagramSection = `> ⚠️ Diagram generation failed: ${err.message}\n\n`;
+  }
+
+  // Step 2: generate OpenAPI spec + issues
   let openApiYaml, issues;
   try {
     ({ openApiYaml, issues } = await generateSpecAndIssues(requirementsText));
@@ -193,9 +219,11 @@ async function handleSpecGeneration(installationId, owner, repo, pullNumber) {
 
   const issueLinks = created.map(i => `- [#${i.number} ${i.title}](${i.url})`).join('\n');
   const body = [
-    '## LeadBot: Requirements → Spec + Issues',
+    '## LeadBot: Requirements → Diagrams + Spec + Issues',
     '',
-    `Created ${created.length} issue(s):`,
+    diagramSection,
+    `### GitHub Issues (${created.length} created)`,
+    '',
     issueLinks,
     '',
     '<details>',
