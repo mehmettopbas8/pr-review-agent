@@ -130,6 +130,53 @@ function buildPRStats(reviews) {
   return { rounds, resolved, persistent };
 }
 
+// Given bot review bodies and a filtered diff, returns a formatted open-issue summary string.
+// Pure — all inputs are plain strings/arrays.
+function buildOpenIssueSummary(botReviewBodies, filteredDiff) {
+  const issueLineRe = /^[\s>]*\**\d+\.\**\s+\**\[(Critical|High|Medium|Low|TODO before merge)\]\**[^\n]*/gm;
+  const filePathRe = /`([^`]+\.[a-z]+)`|(\b[\w./-]+\.[a-z]{2,4}\b)/;
+
+  const allIssues = [];
+  for (const body of botReviewBodies) {
+    let match;
+    issueLineRe.lastIndex = 0;
+    while ((match = issueLineRe.exec(body)) !== null) {
+      const severity = match[1];
+      const line = match[0].trim();
+      const pathMatch = line.match(filePathRe);
+      const filePath = pathMatch ? (pathMatch[1] || pathMatch[2]) : null;
+      allIssues.push({ severity, line: line.slice(0, 120), filePath });
+    }
+  }
+  if (allIssues.length === 0) return '';
+
+  const touchedFiles = new Set(
+    [...filteredDiff.matchAll(/^diff --git a\/.+ b\/(.+)$/gm)].map(m => m[1])
+  );
+
+  const open = [];
+  const addressed = [];
+  for (const issue of allIssues) {
+    if (issue.filePath && touchedFiles.has(issue.filePath)) {
+      addressed.push(issue);
+    } else {
+      open.push(issue);
+    }
+  }
+
+  const lines = ['## Open Issues From Previous Review(s)'];
+  if (open.length > 0) {
+    lines.push('These issues were NOT touched in this push — check if they are still present:');
+    open.forEach(i => lines.push(`- [${i.severity}] ${i.line}`));
+  }
+  if (addressed.length > 0) {
+    lines.push('\nThese files were modified — verify the issues below are resolved:');
+    addressed.forEach(i => lines.push(`- [${i.severity}] ${i.line}`));
+  }
+  lines.push('\nIf all issues above are resolved and no new ones exist, give LGTM.');
+  return lines.join('\n');
+}
+
 module.exports = {
   botMatchesLogin,
   filterDiff,
@@ -138,4 +185,5 @@ module.exports = {
   buildFollowUpBody,
   parseSpecResponse,
   buildPRStats,
+  buildOpenIssueSummary,
 };

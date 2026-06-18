@@ -7,6 +7,8 @@ A self-hosted GitHub App that automates the work of a tech lead — AI-powered P
 | Event | Action |
 |---|---|
 | PR opened / new push | Full AI review — finds bugs, security issues, TODOs, and code quality problems |
+| PR opened with `requirements.md` | Generates GitHub issues + collapsed OpenAPI 3.1 spec (auto-trigger, once per PR) |
+| Comment `/leadbot gen-spec` on a PR | Same spec generation, on-demand |
 | Merge commit pushed to branch | Reminds you of any open Critical/High/Medium/Low issues before you merge |
 | PR merged | Posts a PR retrospective + opens a `technical-debt` follow-up issue for unresolved items |
 
@@ -186,14 +188,81 @@ Closes #42
 
 ---
 
+## Spec Generation
+
+LeadBot can read a `requirements.md` file from a PR and produce:
+- A structured OpenAPI 3.1 YAML spec (collapsed in the review comment)
+- Individual GitHub issues for each endpoint / feature described
+
+**Auto-trigger:** when a PR is opened and contains a `requirements.md` in its diff, LeadBot generates the spec automatically (once per PR).
+
+**Manual trigger:** post the comment `/leadbot gen-spec` on any PR to run spec generation on demand, even if there is no `requirements.md`.
+
+The spec is posted as a collapsible `<details>` block in the review comment so it doesn't clutter the timeline.
+
+---
+
+## Health Check
+
+```
+GET /health
+```
+
+Returns `{"status":"ok"}` with HTTP 200. Use this to verify the server is running.
+
+---
+
+## Running Tests
+
+```bash
+npm test
+```
+
+Runs the Vitest test suite (41 tests across `parsers.test.js` and `githubService.test.js`). No external credentials needed — GitHub API calls are intercepted via a test seam.
+
+```bash
+npm run test:watch   # re-run on file changes
+```
+
+---
+
+## Docker
+
+### Build and run
+
+```bash
+docker build -t leadbot .
+docker run -p 3000:3000 --env-file .env leadbot
+```
+
+### Environment variables in Docker
+
+Pass the `.env` file with `--env-file`, or set each variable individually with `-e`:
+
+```bash
+docker run -p 3000:3000 \
+  -e GITHUB_APP_ID=123456 \
+  -e GITHUB_APP_SLUG=my-pr-reviewer \
+  -e GITHUB_WEBHOOK_SECRET=secret \
+  -e PRIVATE_KEY_PATH=/run/secrets/leadbot.pem \
+  -v /path/to/leadbot.pem:/run/secrets/leadbot.pem:ro \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  leadbot
+```
+
+---
+
 ## Project Structure
 
 | File | Role |
 |---|---|
 | `index.js` | Express server, webhook verification, event routing |
 | `githubService.js` | GitHub API calls — fetch diff, post comments, manage issues |
-| `aiService.js` | AI logic — code review prompt, retrospective, PR stats |
+| `aiService.js` | AI logic — code review prompt, retrospective, spec generation |
+| `parsers.js` | Pure parsing helpers — no side effects, fully tested |
 | `providers.js` | Multi-provider AI abstraction (Anthropic / OpenAI / Gemini) |
+| `parsers.test.js` | Unit tests for all pure functions in parsers.js |
+| `githubService.test.js` | Integration-style tests for GitHub service functions |
 | `.env` | Your secrets (never commit this) |
 | `private-key.pem` | GitHub App private key (never commit this) |
 
@@ -251,13 +320,18 @@ privateKey: process.env.PRIVATE_KEY_CONTENTS || fs.readFileSync(process.env.PRIV
 
 ---
 
+## Known Limitations
+
+- **Diff truncation** — diffs larger than ~80 000 characters are sent to the AI as-is; very large PRs may exceed provider context limits.
+- **In-memory delivery de-duplication** — GitHub retries webhook deliveries on failure. LeadBot de-dupes by delivery ID in memory, so a server restart during a retry window could result in a duplicate comment.
+- **Spec generation is fire-and-forget** — if the AI response is malformed YAML the error is logged but no fallback is posted to the PR.
+
 ## Roadmap
 
-- **Requirement → API Spec generation** — drop a `requirements.md` into a PR, LeadBot generates an OpenAPI YAML spec and a structured issue list automatically
-- **Spec → Issues** — post `/leadbot push-issues` as a PR comment to open all generated issues on GitHub in one shot
 - **Cross-repo support** — target a different repository for issue creation (e.g. open backend issues from a frontend PR)
 - **Per-PR mode control** — use GitHub labels (`leadbot:review-only`, `leadbot:spec-gen`, `leadbot:skip`) to override behavior without touching config
 - **Follow-up issue template redesign** — cleaner, more actionable format
+- **Persistent delivery de-duplication** — use Redis or a small SQLite file so restarts don't break idempotency
 
 ---
 

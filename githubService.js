@@ -1,18 +1,35 @@
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
 const fs = require('fs');
-const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody } = require('./parsers');
+const { botMatchesLogin, filterDiff, isRetrospectiveComment, extractFollowUpItems, buildFollowUpBody, buildOpenIssueSummary } = require('./parsers');
+
+// Memoize the private key.
+// Prefers PRIVATE_KEY_CONTENTS (Railway/cloud) over PRIVATE_KEY_PATH (local file).
+let _privateKey;
+function getPrivateKey() {
+  if (!_privateKey) {
+    _privateKey = process.env.PRIVATE_KEY_CONTENTS
+      || fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+  }
+  return _privateKey;
+}
+
+let _octokitFactory = null;
 
 function getOctokit(installationId) {
+  if (_octokitFactory) return _octokitFactory(installationId);
   return new Octokit({
     authStrategy: createAppAuth,
     auth: {
       appId: process.env.GITHUB_APP_ID,
-      privateKey: fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8'),
+      privateKey: getPrivateKey(),
       installationId,
     },
   });
 }
+
+// Test seam — call this in tests to inject a mock Octokit factory.
+function _setOctokitFactory(fn) { _octokitFactory = fn; }
 
 async function getPRDiff(installationId, owner, repo, pullNumber) {
   const octokit = getOctokit(installationId);
@@ -40,54 +57,7 @@ async function getOpenIssueSummary(installationId, owner, repo, pullNumber, botL
     .filter(r => botMatchesLogin(r.user.login, botLogin) && !isRetrospectiveComment(r.body))
     .map(r => r.body);
   if (botReviews.length === 0) return '';
-
-  // Match numbered items regardless of bold/italic markdown wrapping around severity tags
-  const issueLineRe = /^[\s>]*\**\d+\.\**\s+\**\[(Critical|High|Medium|Low|TODO before merge)\]\**[^\n]*/gm;
-  // Extract file paths mentioned right after the issue line (backtick path or plain path pattern)
-  const filePathRe = /`([^`]+\.[a-z]+)`|(\b[\w./-]+\.[a-z]{2,4}\b)/;
-
-  const allIssues = [];
-  for (const body of botReviews) {
-    let match;
-    issueLineRe.lastIndex = 0;
-    while ((match = issueLineRe.exec(body)) !== null) {
-      const severity = match[1];
-      const line = match[0].trim();
-      const pathMatch = line.match(filePathRe);
-      const filePath = pathMatch ? (pathMatch[1] || pathMatch[2]) : null;
-      allIssues.push({ severity, line: line.slice(0, 120), filePath });
-    }
-  }
-
-  if (allIssues.length === 0) return '';
-
-  // Determine which flagged files were touched in the new diff
-  const touchedFiles = new Set(
-    [...filteredDiff.matchAll(/^diff --git a\/.+ b\/(.+)$/gm)].map(m => m[1])
-  );
-
-  const open = [];
-  const addressed = [];
-  for (const issue of allIssues) {
-    if (issue.filePath && touchedFiles.has(issue.filePath)) {
-      addressed.push(issue);
-    } else {
-      open.push(issue);
-    }
-  }
-
-  const lines = ['## Open Issues From Previous Review(s)'];
-  if (open.length > 0) {
-    lines.push('These issues were NOT touched in this push — check if they are still present:');
-    open.forEach(i => lines.push(`- [${i.severity}] ${i.line}`));
-  }
-  if (addressed.length > 0) {
-    lines.push('\nThese files were modified — verify the issues below are resolved:');
-    addressed.forEach(i => lines.push(`- [${i.severity}] ${i.line}`));
-  }
-  lines.push('\nIf all issues above are resolved and no new ones exist, give LGTM.');
-
-  return lines.join('\n');
+  return buildOpenIssueSummary(botReviews, filteredDiff);
 }
 
 async function getLinkedIssue(installationId, owner, repo, prBody) {
@@ -162,4 +132,50 @@ async function postReviewComment(installationId, owner, repo, pullNumber, body) 
   });
 }
 
-module.exports = { getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment, getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems, createFollowUpIssue };
+async function getFileFromPR(installationId, owner, repo, pullNumber, filename) {
+  const octokit = getOctokit(installationId);
+  // Get PR head SHA
+  const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  const ref = pr.head.sha;
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path: filename, ref });
+    if (data.type !== 'file') return null;
+    return Buffer.from(data.content, 'base64').toString('utf8');
+  } catch (err) {
+    if (err.status === 404) return null;
+    throw err;
+  }
+}
+
+async function createIssuesFromSpec(installationId, owner, repo, issues) {
+  const octokit = getOctokit(installationId);
+  const created = [];
+  for (const issue of issues) {
+    const labels = Array.isArray(issue.labels) ? issue.labels : [];
+    for (const label of labels) {
+      await ensureLabel(octokit, owner, repo, label, '0075ca', '').catch(() => {});
+    }
+    try {
+      const { data } = await octokit.rest.issues.create({
+        owner, repo,
+        title: issue.title,
+        body: issue.body || '',
+        labels,
+      });
+      created.push({ number: data.number, url: data.html_url, title: data.title });
+    } catch (err) {
+      if (err.status === 403) {
+        console.error(`createIssuesFromSpec 403: re-authorize the GitHub App's Issues permission for ${owner}/${repo}`);
+      }
+      throw err;
+    }
+  }
+  return created;
+}
+
+module.exports = {
+  getPRDiff, getHeadCommitMessage, getLinkedIssue, postReviewComment,
+  getOpenIssueSummary, getAllBotReviews, getMergeFollowUpItems,
+  createFollowUpIssue, getFileFromPR, createIssuesFromSpec,
+  _setOctokitFactory,
+};

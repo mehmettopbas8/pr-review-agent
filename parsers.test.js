@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { botMatchesLogin, filterDiff, isRetrospectiveComment } from './parsers.js';
+import { botMatchesLogin, filterDiff, isRetrospectiveComment, buildFollowUpBody, extractFollowUpItems, parseSpecResponse, buildPRStats, buildOpenIssueSummary } from './parsers.js';
 
 describe('botMatchesLogin', () => {
   it('matches exact [bot] suffix', () => {
@@ -56,5 +56,166 @@ describe('isRetrospectiveComment', () => {
   });
   it('does not match a normal review', () => {
     expect(isRetrospectiveComment('1. [High] Missing validation in auth.js')).toBe(false);
+  });
+});
+
+describe('buildFollowUpBody', () => {
+  it('includes PR back-link', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: [], blockers: [], pullNumber: 42 });
+    expect(body).toContain('#42');
+  });
+  it('renders checkbox task items', () => {
+    const body = buildFollowUpBody({ todos: ['Fix the thing'], mediums: [], blockers: [], pullNumber: 1 });
+    expect(body).toContain('- [ ] Fix the thing');
+  });
+  it('renders blockers in Critical/High section', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: [], blockers: ['SQL injection in login'], pullNumber: 7 });
+    expect(body).toContain('## Critical / High');
+    expect(body).toContain('- [ ] SQL injection in login');
+  });
+  it('renders medium/low section', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: ['Missing index on users table'], blockers: [], pullNumber: 3 });
+    expect(body).toContain('## Medium / Low');
+  });
+  it('includes auto-generated footer', () => {
+    const body = buildFollowUpBody({ todos: [], mediums: [], blockers: [], pullNumber: 5 });
+    expect(body).toContain('Automatically opened');
+  });
+});
+
+describe('extractFollowUpItems', () => {
+  it('returns empty arrays for no reviews', () => {
+    expect(extractFollowUpItems([])).toEqual({ todos: [], mediums: [], blockers: [] });
+  });
+  it('extracts todos', () => {
+    const review = '1. [TODO before merge] Add tests for the auth module';
+    const { todos } = extractFollowUpItems([review]);
+    expect(todos).toHaveLength(1);
+    expect(todos[0]).toContain('Add tests');
+  });
+  it('extracts blockers from Critical/High tags', () => {
+    const review = '1. [Critical] SQL injection\n2. [High] Missing auth check';
+    const { blockers } = extractFollowUpItems([review]);
+    expect(blockers).toHaveLength(2);
+  });
+  it('extracts mediums from Medium/Low tags', () => {
+    const review = '1. [Medium] Rename variable\n2. [Low] Add comment';
+    const { mediums } = extractFollowUpItems([review]);
+    expect(mediums).toHaveLength(2);
+  });
+  it('deduplicates identical items', () => {
+    const review = '1. [High] Same issue\n1. [High] Same issue';
+    const { blockers } = extractFollowUpItems([review]);
+    expect(blockers).toHaveLength(1);
+  });
+});
+
+describe('parseSpecResponse', () => {
+  const SAMPLE = `Here is the spec:
+
+\`\`\`yaml
+openapi: 3.1.0
+info:
+  title: Test API
+  version: 1.0.0
+paths: {}
+\`\`\`
+
+And the issues:
+
+\`\`\`json
+[{"title": "Add GET /users", "body": "Implement the users list endpoint", "labels": ["enhancement"]}]
+\`\`\`
+`;
+
+  it('extracts YAML block', () => {
+    const { openApiYaml } = parseSpecResponse(SAMPLE);
+    expect(openApiYaml).toContain('openapi: 3.1.0');
+  });
+  it('extracts issues array', () => {
+    const { issues } = parseSpecResponse(SAMPLE);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].title).toBe('Add GET /users');
+  });
+  it('throws on missing yaml block', () => {
+    const bad = '```json\n[]\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('missing ```yaml block');
+  });
+  it('throws on missing json block', () => {
+    const bad = '```yaml\nopenapi: 3.1.0\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('missing ```json block');
+  });
+  it('throws on invalid JSON', () => {
+    const bad = '```yaml\nopenapi: 3.1.0\n```\n```json\nnot-json\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('invalid JSON');
+  });
+  it('throws when issues is not an array', () => {
+    const bad = '```yaml\nopenapi: 3.1.0\n```\n```json\n{"key": "val"}\n```';
+    expect(() => parseSpecResponse(bad)).toThrow('must be a JSON array');
+  });
+  it('tolerates extra prose around the blocks', () => {
+    const withProse = `Some intro text.\n${SAMPLE}\nSome outro text.`;
+    const { issues } = parseSpecResponse(withProse);
+    expect(issues).toHaveLength(1);
+  });
+});
+
+describe('buildPRStats', () => {
+  const round1 = '1. [High] Missing auth check in login.js\n**Verdict: Changes Requested**';
+  const round2 = '1. [Low] Rename variable\n**Verdict: Approve with Suggestions**';
+
+  it('counts rounds correctly', () => {
+    const { rounds } = buildPRStats([round1, round2]);
+    expect(rounds).toHaveLength(2);
+  });
+  it('extracts severity from each round', () => {
+    const { rounds } = buildPRStats([round1]);
+    expect(rounds[0].issues[0].severity).toBe('High');
+  });
+  it('extracts verdict', () => {
+    const { rounds } = buildPRStats([round1]);
+    expect(rounds[0].verdict).toBe('Changes Requested');
+  });
+  it('marks resolved issues between rounds', () => {
+    const { resolved } = buildPRStats([round1, round2]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].severity).toBe('High');
+  });
+  it('marks persistent issues', () => {
+    const same = '1. [Low] Rename variable\n**Verdict: Approve with Suggestions**';
+    const { persistent } = buildPRStats([round2, same]);
+    expect(persistent).toHaveLength(1);
+  });
+  it('returns empty resolved/persistent for single round', () => {
+    const { resolved, persistent } = buildPRStats([round1]);
+    expect(resolved).toHaveLength(0);
+    expect(persistent).toHaveLength(0);
+  });
+});
+
+describe('buildOpenIssueSummary', () => {
+  const reviewWithFile = '1. [High] Missing auth check in `src/auth.js` — add validation';
+  const diff = 'diff --git a/src/auth.js b/src/auth.js\n+fixed\n';
+  const diffOther = 'diff --git a/src/other.js b/src/other.js\n+something\n';
+
+  it('returns empty string when no bot reviews', () => {
+    expect(buildOpenIssueSummary([], diff)).toBe('');
+  });
+  it('returns empty string when no issues found in reviews', () => {
+    expect(buildOpenIssueSummary(['Just a paragraph comment.'], diff)).toBe('');
+  });
+  it('places issue in addressed when its file was touched', () => {
+    const result = buildOpenIssueSummary([reviewWithFile], diff);
+    expect(result).toContain('verify the issues below are resolved');
+    expect(result).toContain('[High]');
+  });
+  it('places issue in open when its file was NOT touched', () => {
+    const result = buildOpenIssueSummary([reviewWithFile], diffOther);
+    expect(result).toContain('NOT touched');
+    expect(result).toContain('[High]');
+  });
+  it('includes LGTM suggestion at end', () => {
+    const result = buildOpenIssueSummary([reviewWithFile], diff);
+    expect(result).toContain('LGTM');
   });
 });
